@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from torch import nn, einsum
 
 from einops import rearrange, repeat
+from embedding import NEmbedding
 
 # feedforward and attention
 
@@ -123,7 +124,10 @@ class FTTransformer(nn.Module):
         dim_out = 1,
         num_special_tokens = 2,
         attn_dropout = 0.,
-        ff_dropout = 0.
+        ff_dropout = 0.,
+        hidden_dim = 128,
+        numerical_features: list = None,
+        classification: bool = False
     ):
         super().__init__()
         assert all(map(lambda n: n > 0, categories)), 'number of each category must be positive'
@@ -155,7 +159,7 @@ class FTTransformer(nn.Module):
         self.num_continuous = num_continuous
 
         if self.num_continuous > 0:
-            self.numerical_embedder = NumericalEmbedder(dim, self.num_continuous)
+            self.numerical_embedder = NEmbedding(dim, self.num_continuous, numerical_features)
 
         # cls token
 
@@ -180,11 +184,45 @@ class FTTransformer(nn.Module):
             nn.Linear(dim, dim_out)
         )
 
+        self.is_classification = classification
+
+        # to reconstruction
+        
+        self.total_features_number = self.num_continuous + self.num_categories
+        self.embedding_dim = dim
+        self.to_reconstruction = nn.Sequential(
+            nn.LayerNorm(self.total_features_number * self.embedding_dim),
+            nn.ReLU(),
+            nn.Linear(dim, hidden_dim),  # First hidden layer
+            nn.ReLU(),
+            nn.Linear(hidden_dim, self.total_features_number) 
+        )
+    
+    def mask_inputs(self, inputs):
+        """
+        Randomly mask input values during training
+        """
+        # Generate a mask for each column
+        column_mask = torch.rand(inputs.size(1)) < self.mask_prob
+
+        # Tile the column mask to match the shape of inputs
+        column_mask = column_mask.unsqueeze(0).expand(inputs.size(0), -1)
+
+        # Replace masked columns with MASK_VALUE
+        masked_inputs = inputs.clone()
+        masked_inputs[:, column_mask] = self.MASK_VALUE
+
+        return masked_inputs, column_mask
+
     def forward(self, x_categ, x_numer, return_attn = False):
         assert x_categ.shape[-1] == self.num_categories, f'you must pass in {self.num_categories} values for your categories input'
 
         xs = []
         if self.num_unique_categories > 0:
+            # Implement random masking during training
+            if self.training:
+                x_categ = self.mask_inputs(x_categ)
+
             x_categ = x_categ + self.categories_offset
 
             x_categ = self.categorical_embeds(x_categ)
@@ -193,6 +231,7 @@ class FTTransformer(nn.Module):
 
         # add numerically embedded tokens
         if self.num_continuous > 0:
+            # Numerical embedding has masking defined in the class
             x_numer = self.numerical_embedder(x_numer)
 
             xs.append(x_numer)
@@ -210,15 +249,25 @@ class FTTransformer(nn.Module):
 
         x, attns = self.transformer(x, return_attn = True)
 
-        # get cls token
+        if self.is_classification:
+            # get cls token
 
-        x = x[:, 0]
+            x = x[:, 0]
 
-        # out in the paper is linear(relu(ln(cls)))
+            # out in the paper is linear(relu(ln(cls)))
 
-        logits = self.to_logits(x)
+            logits = self.to_logits(x)
 
-        if not return_attn:
-            return logits
+            if not return_attn:
+                return logits
 
-        return logits, attns
+            return logits, attns
+        
+        else: # reconstruction
+            reshaped_x = x.view(-1, self.num_features * self.embedding_dim)
+            reconstructed_input = self.to_reconstruction(reshaped_x)
+
+            if not return_attn:
+                return reconstructed_input  # Return None for attention maps in reconstruction task
+
+            return reconstructed_input, attns
