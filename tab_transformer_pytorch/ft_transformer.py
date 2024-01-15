@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch import nn, einsum
 
 from einops import rearrange, repeat
-from embedding import NEmbedding
+from .embeddings import NEmbedding
 
 # feedforward and attention
 
@@ -127,7 +127,8 @@ class FTTransformer(nn.Module):
         ff_dropout = 0.,
         hidden_dim = 128,
         numerical_features: list = None,
-        classification: bool = False
+        classification: bool = False,
+        emb_type = "ple"
     ):
         super().__init__()
         assert all(map(lambda n: n > 0, categories)), 'number of each category must be positive'
@@ -159,8 +160,12 @@ class FTTransformer(nn.Module):
         self.num_continuous = num_continuous
 
         if self.num_continuous > 0:
-            self.numerical_embedder = NEmbedding(dim, self.num_continuous, numerical_features)
+            self.numerical_embedder = NEmbedding(self.num_continuous, numerical_features, emb_dim=dim, emb_type=emb_type)
 
+        # total number of features
+        
+        self.num_features = len(categories) + num_continuous
+        
         # cls token
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
@@ -187,15 +192,14 @@ class FTTransformer(nn.Module):
         self.is_classification = classification
 
         # to reconstruction
-        
-        self.total_features_number = self.num_continuous + self.num_categories
+
         self.embedding_dim = dim
         self.to_reconstruction = nn.Sequential(
-            nn.LayerNorm(self.total_features_number * self.embedding_dim),
+            nn.LayerNorm(self.num_features * self.embedding_dim),
             nn.ReLU(),
-            nn.Linear(dim, hidden_dim),  # First hidden layer
+            nn.Linear(self.num_features * self.embedding_dim, hidden_dim),  # First hidden layer
             nn.ReLU(),
-            nn.Linear(hidden_dim, self.total_features_number) 
+            nn.Linear(hidden_dim, self.num_features) 
         )
     
     def mask_inputs(self, inputs):
@@ -214,8 +218,8 @@ class FTTransformer(nn.Module):
 
         return masked_inputs, column_mask
 
-    def forward(self, x_categ, x_numer, return_attn = False):
-        assert x_categ.shape[-1] == self.num_categories, f'you must pass in {self.num_categories} values for your categories input'
+    def forward(self, x_numer, x_categ = [], return_attn = False):
+        #assert x_categ.shape[-1] == self.num_categories, f'you must pass in {self.num_categories} values for your categories input'
 
         xs = []
         if self.num_unique_categories > 0:
@@ -241,9 +245,10 @@ class FTTransformer(nn.Module):
         x = torch.cat(xs, dim = 1)
 
         # append cls tokens
-        b = x.shape[0]
-        cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
-        x = torch.cat((cls_tokens, x), dim = 1)
+        if self.is_classification:
+            b = x.shape[0]
+            cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
+            x = torch.cat((cls_tokens, x), dim = 1)
 
         # attend
 

@@ -25,9 +25,7 @@ class PLE(nn.Module):
             bins = torch.unique(torch.tensor([np.quantile(data, q) for q in np.arange(0.0, 1 + interval, interval)])).float()
 
         self.n_bins = len(bins)
-        self.lookup_table = nn.EmbeddingBag(len(bins), 1, sparse=True)
-        self.lookup_table.weight.data = bins.view(-1, 1)
-        self.lookup_size = self.lookup_table.num_embeddings
+        self.lookup_table = {i: bin_val for i, bin_val in enumerate(bins)}
 
     def forward(self, x):
         ple_encoding_one = torch.ones((x.size(0), self.n_bins), device=x.device)
@@ -38,21 +36,19 @@ class PLE(nn.Module):
         other_case = []
 
         for i in range(1, self.n_bins + 1):
-            i = torch.tensor(i, device=x.device)
-            x_float = x.float()
-            left_mask = (x_float < self.lookup_table(i - 1)) & (i > 1)
-            right_mask = (x_float >= self.lookup_table(i)) & (i < self.n_bins)
-            v = (x_float - self.lookup_table(i - 1)) / (self.lookup_table(i) - self.lookup_table(i - 1))
+            x_float = x.float().unsqueeze(1)
+            left_mask = (x_float < self.lookup_table.get((i - 1), -1)) & (i > 1)
+            right_mask = (x_float >= self.lookup_table.get(i, -1)) & (i < self.n_bins)
+            v = (x_float - self.lookup_table.get((i - 1), -1)) / (self.lookup_table.get(i, -1) - self.lookup_table.get((i - 1), -1))
             left_masks.append(left_mask)
             right_masks.append(right_mask)
             other_case.append(v)
 
-        left_masks = torch.stack(left_masks, dim=1)
-        right_masks = torch.stack(right_masks, dim=1)
-        other_case = torch.stack(other_case, dim=1)
+        left_masks = torch.stack(left_masks, dim=1).squeeze()
+        right_masks = torch.stack(right_masks, dim=1).squeeze()
+        other_case = torch.stack(other_case, dim=1).squeeze()
 
         other_mask = (right_masks == left_masks).logical_not_()
-        other_case = other_case.float()
         enc = torch.where(left_masks, ple_encoding_zero, ple_encoding_one)
         enc = torch.where(other_mask, other_case, enc).view(-1, 1, self.n_bins)
 
@@ -83,8 +79,8 @@ class NEmbedding(nn.Module):
         X,
         y=None,
         task=None,
-        emb_dim=32,
-        emb_type='linear',
+        emb_dim=64,
+        emb_type='ple',
         n_bins=10,
         sigma=1,
         tree_params={},
@@ -102,17 +98,17 @@ class NEmbedding(nn.Module):
         if emb_type == 'ple':
             self.embedding_layers = nn.ModuleDict()
             self.linear_layers = nn.ModuleDict()
-            for i in self.num_features:
+            for i in range(self.num_features):
                 emb_l = PLE(n_bins)
                 if y is None:
                     emb_l.adapt(X[:, i], tree_params=tree_params)
                 else:
                     emb_l.adapt(X[:, i].view(-1, 1), y, task=task, tree_params=tree_params)
 
-                lin_l = nn.Linear(n_bins, emb_dim)
+                lin_l = nn.Linear(emb_l.n_bins, emb_dim)
                 
-                self.embedding_layers[i] = emb_l
-                self.linear_layers[i] = lin_l
+                self.embedding_layers[str(i)] = emb_l
+                self.linear_layers[str(i)] = lin_l
 
         elif emb_type == 'periodic':
             # There's just 1 periodic layer
@@ -140,12 +136,12 @@ class NEmbedding(nn.Module):
    
     def forward(self, x, training=None):
         if training==True:
-            x = x # self.masked_inputs
+            x = self.mask_inputs(x) # self.masked_inputs
         else:
             x = x
 
         if self.emb_type == 'ple':
-            emb_columns = [self.embed_column(f, x[:, i]) for i, f in enumerate(self.features)]
+            emb_columns = [self.embed_column(str(i), x[:, i]) for i in range(self.num_features)]
             embs = torch.cat(emb_columns, dim=1)
             
         elif self.emb_type == 'periodic':
