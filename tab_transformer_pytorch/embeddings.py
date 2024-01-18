@@ -80,10 +80,11 @@ class NEmbedding(nn.Module):
         y=None,
         task=None,
         emb_dim=64,
-        emb_type='ple',
-        n_bins=10,
+        emb_type='linear',
+        n_bins=128,
         sigma=1,
         tree_params={},
+        mask_prob=0.15
     ):
         super(NEmbedding, self).__init__()
 
@@ -93,6 +94,8 @@ class NEmbedding(nn.Module):
         self.num_features = num_features
         self.emb_type = emb_type
         self.emb_dim = emb_dim
+
+        self.mask_prob = mask_prob
         
         # Initialise embedding layers
         if emb_type == 'ple':
@@ -104,11 +107,12 @@ class NEmbedding(nn.Module):
                     emb_l.adapt(X[:, i], tree_params=tree_params)
                 else:
                     emb_l.adapt(X[:, i].view(-1, 1), y, task=task, tree_params=tree_params)
-
+                
                 lin_l = nn.Linear(emb_l.n_bins, emb_dim)
+                relu_activation = nn.ReLU()
                 
                 self.embedding_layers[str(i)] = emb_l
-                self.linear_layers[str(i)] = lin_l
+                self.linear_layers[str(i)] = nn.Sequential(lin_l, relu_activation) #lin_l
 
         elif emb_type == 'periodic':
             # There's just 1 periodic layer
@@ -118,8 +122,8 @@ class NEmbedding(nn.Module):
             self.linear_w = nn.Parameter(torch.randn(self.num_features, 1, self.emb_dim))
             self.linear_b = nn.Parameter(torch.randn(self.num_features, 1))
     
-    def mask_inputs(self, inputs, mask_prob=0.15, training=None):
-        column_mask = torch.rand((inputs.size(1,))) < mask_prob
+    def mask_inputs(self, inputs, mask_prob):
+        column_mask = torch.rand((inputs.size(1,)), device=inputs.device) < mask_prob
         column_mask = column_mask.unsqueeze(0).expand(inputs.size(0), -1)
         masked_inputs = torch.where(column_mask, self.MASK_VALUE, inputs)
 
@@ -134,9 +138,10 @@ class NEmbedding(nn.Module):
         emb = self.linear_layers[f](self.embedding_layers[f](data))
         return emb
    
-    def forward(self, x, training=None):
-        if training==True:
-            x = self.mask_inputs(x) # self.masked_inputs
+    def forward(self, x, mask=False):
+        if (mask == True):
+            self.mask_inputs(x, self.mask_prob)
+            x =  self.masked_inputs
         else:
             x = x
 

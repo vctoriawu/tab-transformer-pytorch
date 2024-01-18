@@ -4,6 +4,7 @@ from torch import nn, einsum
 
 from einops import rearrange, repeat
 from .embeddings import NEmbedding
+from .transformer_block import TransformerBlock
 
 # feedforward and attention
 
@@ -15,10 +16,10 @@ class GEGLU(nn.Module):
 def FeedForward(dim, mult = 4, dropout = 0.):
     return nn.Sequential(
         nn.LayerNorm(dim),
-        nn.Linear(dim, dim * mult * 2),
+        nn.Linear(dim, dim * 2), # * mult * 2),
         GEGLU(),
         nn.Dropout(dropout),
-        nn.Linear(dim * mult, dim)
+        nn.Linear(dim, dim) # * mult, dim)
     )
 
 class Attention(nn.Module):
@@ -128,7 +129,8 @@ class FTTransformer(nn.Module):
         hidden_dim = 128,
         numerical_features: list = None,
         classification: bool = False,
-        emb_type = "ple"
+        emb_type = "ple",
+        mask_prob=0.15
     ):
         super().__init__()
         assert all(map(lambda n: n > 0, categories)), 'number of each category must be positive'
@@ -160,7 +162,9 @@ class FTTransformer(nn.Module):
         self.num_continuous = num_continuous
 
         if self.num_continuous > 0:
-            self.numerical_embedder = NEmbedding(self.num_continuous, numerical_features, emb_dim=dim, emb_type=emb_type)
+            self.numerical_embedder = NEmbedding(self.num_continuous, numerical_features, emb_dim=dim, emb_type=emb_type, mask_prob=mask_prob)
+            #self.numerical_embedder = NumericalEmbedder(dim, self.num_continuous)
+
 
         # total number of features
         
@@ -170,7 +174,21 @@ class FTTransformer(nn.Module):
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
 
-        # transformer
+
+        # Transformers
+
+        '''self.transformer = nn.ModuleList([])
+        for _ in range(depth):
+            self.transformer.append(
+                TransformerBlock(
+                    dim,
+                    heads,
+                    dim,
+                    att_dropout=attn_dropout,
+                    ff_dropout=ff_dropout,
+                    post_norm=False,  # FT-Transformer uses pre-norm
+                ).cuda() # FIX THIS
+            )'''
 
         self.transformer = Transformer(
             dim = dim,
@@ -183,11 +201,11 @@ class FTTransformer(nn.Module):
 
         # to logits
 
-        self.to_logits = nn.Sequential(
+        ''''self.to_logits = nn.Sequential(
             nn.LayerNorm(dim),
             nn.ReLU(),
             nn.Linear(dim, dim_out)
-        )
+        )'''
 
         self.is_classification = classification
 
@@ -218,7 +236,7 @@ class FTTransformer(nn.Module):
 
         return masked_inputs, column_mask
 
-    def forward(self, x_numer, x_categ = [], return_attn = False):
+    def forward(self, x_numer, x_categ = [], return_attn = False, mask = False):
         #assert x_categ.shape[-1] == self.num_categories, f'you must pass in {self.num_categories} values for your categories input'
 
         xs = []
@@ -236,7 +254,7 @@ class FTTransformer(nn.Module):
         # add numerically embedded tokens
         if self.num_continuous > 0:
             # Numerical embedding has masking defined in the class
-            x_numer = self.numerical_embedder(x_numer)
+            x_numer = self.numerical_embedder(x_numer, mask).to(torch.float32)
 
             xs.append(x_numer)
 
@@ -252,6 +270,9 @@ class FTTransformer(nn.Module):
 
         # attend
 
+        #for transformer_block in self.transformer:
+        #    x, attns = transformer_block(x)
+
         x, attns = self.transformer(x, return_attn = True)
 
         if self.is_classification:
@@ -261,7 +282,7 @@ class FTTransformer(nn.Module):
 
             # out in the paper is linear(relu(ln(cls)))
 
-            logits = self.to_logits(x)
+            logits = x # self.to_logits(x)
 
             if not return_attn:
                 return logits
