@@ -122,7 +122,7 @@ class FTTransformer(nn.Module):
         depth,
         heads,
         dim_head = 16,
-        dim_out = 1,
+        dim_out = 4,
         num_special_tokens = 2,
         attn_dropout = 0.,
         ff_dropout = 0.,
@@ -130,7 +130,8 @@ class FTTransformer(nn.Module):
         numerical_features: list = None,
         classification: bool = False,
         emb_type = "ple",
-        mask_prob=0.15
+        mask_prob=0.15,
+        numerical_bins=10
     ):
         super().__init__()
         assert all(map(lambda n: n > 0, categories)), 'number of each category must be positive'
@@ -162,9 +163,7 @@ class FTTransformer(nn.Module):
         self.num_continuous = num_continuous
 
         if self.num_continuous > 0:
-            self.numerical_embedder = NEmbedding(self.num_continuous, numerical_features, emb_dim=dim, emb_type=emb_type, mask_prob=mask_prob)
-            #self.numerical_embedder = NumericalEmbedder(dim, self.num_continuous)
-
+            self.numerical_embedder = NEmbedding(self.num_continuous, numerical_features, emb_dim=dim, emb_type=emb_type, mask_prob=mask_prob, n_bins=numerical_bins)
 
         # total number of features
         
@@ -177,19 +176,6 @@ class FTTransformer(nn.Module):
 
         # Transformers
 
-        '''self.transformer = nn.ModuleList([])
-        for _ in range(depth):
-            self.transformer.append(
-                TransformerBlock(
-                    dim,
-                    heads,
-                    dim,
-                    att_dropout=attn_dropout,
-                    ff_dropout=ff_dropout,
-                    post_norm=False,  # FT-Transformer uses pre-norm
-                ).cuda() # FIX THIS
-            )'''
-
         self.transformer = Transformer(
             dim = dim,
             depth = depth,
@@ -201,11 +187,11 @@ class FTTransformer(nn.Module):
 
         # to logits
 
-        ''''self.to_logits = nn.Sequential(
+        self.to_logits = nn.Sequential(
             nn.LayerNorm(dim),
             nn.ReLU(),
             nn.Linear(dim, dim_out)
-        )'''
+        )
 
         self.is_classification = classification
 
@@ -282,7 +268,7 @@ class FTTransformer(nn.Module):
 
             # out in the paper is linear(relu(ln(cls)))
 
-            logits = x # self.to_logits(x)
+            logits = self.to_logits(x)
 
             if not return_attn:
                 return logits
