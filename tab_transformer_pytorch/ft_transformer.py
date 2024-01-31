@@ -205,6 +205,27 @@ class FTTransformer(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, self.num_features) 
         )
+
+        parameters = {
+            'categories': categories,
+            'num_continuous': num_continuous,
+            'dim': dim,
+            'depth': depth,
+            'heads': heads,
+            'dim_head': dim_head,
+            'dim_out': dim_out,
+            'num_special_tokens': num_special_tokens,
+            'attn_dropout': attn_dropout,
+            'ff_dropout': ff_dropout,
+            'hidden_dim': hidden_dim,
+            'numerical_features': numerical_features,
+            'classification': classification,
+            'emb_type': emb_type,
+            'mask_prob': mask_prob,
+            'numerical_bins': numerical_bins
+        }
+
+        torch.save(parameters, "model_parameters.pth")
     
     def mask_inputs(self, inputs):
         """
