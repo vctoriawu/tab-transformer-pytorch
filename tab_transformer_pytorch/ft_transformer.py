@@ -4,7 +4,6 @@ from torch import nn, einsum
 
 from einops import rearrange, repeat
 from .embeddings import NEmbedding
-from .transformer_block import TransformerBlock
 
 # feedforward and attention
 
@@ -221,7 +220,6 @@ class FTTransformer(nn.Module):
             'numerical_features': numerical_features,
             'classification': classification,
             'emb_type': emb_type,
-            'mask_prob': mask_prob,
             'numerical_bins': numerical_bins
         }
 
@@ -285,16 +283,16 @@ class FTTransformer(nn.Module):
         if self.is_classification:
             # get cls token
 
-            x = x[:, 0]
+            cls_x = x[:, 0]
 
             # out in the paper is linear(relu(ln(cls)))
 
-            logits = self.to_logits(x)
+            logits = self.to_logits(cls_x)
 
             if not return_attn:
-                return logits
+                return logits, x
 
-            return logits, attns
+            return logits, x, attns
         
         else: # reconstruction
             reshaped_x = x.view(-1, self.num_features * self.embedding_dim)
